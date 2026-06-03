@@ -10,13 +10,15 @@ import faiss
 # Page configuration
 # -----------------------------
 st.set_page_config(
-    page_title="Free RAG PDF Q&A App",
+    page_title="AI Document Assistant using RAG",
     page_icon="📄",
     layout="centered"
 )
 
-st.title("📄 Free RAG PDF Q&A App")
-st.write("Upload a PDF and ask questions from it using Gemini + FAISS + free embeddings.")
+st.title("📄 AI Document Assistant using RAG")
+st.write(
+    "Upload a PDF, ask questions, and get answers grounded in the document using Retrieval Augmented Generation."
+)
 
 
 # -----------------------------
@@ -34,7 +36,7 @@ def get_gemini_client():
 
 client = get_gemini_client()
 
-# You can change this if needed.
+# Change this model if needed.
 GEMINI_MODEL = "gemini-2.5-flash"
 
 
@@ -47,6 +49,29 @@ def load_embedding_model():
 
 
 embedding_model = load_embedding_model()
+
+
+# -----------------------------
+# Initialize session state
+# -----------------------------
+def initialize_session_state():
+    if "document_ready" not in st.session_state:
+        st.session_state["document_ready"] = False
+
+    if "chunks" not in st.session_state:
+        st.session_state["chunks"] = []
+
+    if "index" not in st.session_state:
+        st.session_state["index"] = None
+
+    if "text" not in st.session_state:
+        st.session_state["text"] = ""
+
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = []
+
+
+initialize_session_state()
 
 
 # -----------------------------
@@ -114,9 +139,16 @@ def retrieve_relevant_chunks(question, chunks, index, top_k=3):
 
     relevant_chunks = []
 
-    for idx in indices[0]:
-        if idx < len(chunks):
-            relevant_chunks.append(chunks[idx])
+    for rank, idx in enumerate(indices[0], start=1):
+        if 0 <= idx < len(chunks):
+            relevant_chunks.append(
+                {
+                    "rank": rank,
+                    "chunk_index": int(idx),
+                    "content": chunks[idx],
+                    "distance": float(distances[0][rank - 1])
+                }
+            )
 
     return relevant_chunks
 
@@ -125,10 +157,15 @@ def retrieve_relevant_chunks(question, chunks, index, top_k=3):
 # Generate answer using Gemini
 # -----------------------------
 def generate_answer(question, relevant_chunks):
-    context = "\n\n".join(relevant_chunks)
+    context = "\n\n".join(
+        [
+            f"Source Chunk {chunk['rank']}:\n{chunk['content']}"
+            for chunk in relevant_chunks
+        ]
+    )
 
     prompt = f"""
-You are a helpful AI assistant.
+You are a helpful AI document assistant.
 
 Answer the user's question using only the context provided below.
 
@@ -137,7 +174,8 @@ Rules:
 2. If the answer is not present in the context, say:
    "I could not find this information in the uploaded document."
 3. Keep the answer clear and simple.
-4. If possible, mention which part of the context supports the answer.
+4. At the end, mention which source chunks were used.
+5. Do not make assumptions beyond the document.
 
 Context:
 {context}
@@ -176,30 +214,68 @@ Original error:
 
 
 # -----------------------------
+# Reset functions
+# -----------------------------
+def reset_document():
+    st.session_state["document_ready"] = False
+    st.session_state["chunks"] = []
+    st.session_state["index"] = None
+    st.session_state["text"] = ""
+    st.session_state["chat_history"] = []
+
+
+def clear_chat():
+    st.session_state["chat_history"] = []
+
+
+# -----------------------------
 # Sidebar
 # -----------------------------
 with st.sidebar:
     st.header("Project Info")
-    st.write("This is a simple RAG app.")
+    st.write("This is a RAG-based AI document assistant.")
 
     st.markdown("""
-    **Flow:**
+    **RAG Flow:**
+
     1. Upload PDF  
     2. Extract text  
-    3. Create chunks  
+    3. Split text into chunks  
     4. Generate embeddings  
     5. Store vectors in FAISS  
     6. Retrieve relevant chunks  
-    7. Ask Gemini to answer  
+    7. Send context to Gemini  
+    8. Generate grounded answer  
     """)
 
     st.markdown("---")
+
+    st.subheader("Tech Stack")
     st.write(f"LLM Model: `{GEMINI_MODEL}`")
     st.write("Embedding Model: `all-MiniLM-L6-v2`")
+    st.write("Vector Search: `FAISS`")
+    st.write("Frontend: `Streamlit`")
+
+    st.markdown("---")
+
+    st.subheader("Interview Summary")
+    st.write(
+        "This project demonstrates AI integration, document processing, embeddings, vector search, retrieval, prompt engineering, and LLM-based answer generation."
+    )
+
+    st.markdown("---")
+
+    if st.button("Clear Chat"):
+        clear_chat()
+        st.success("Chat history cleared.")
+
+    if st.button("Reset Document"):
+        reset_document()
+        st.success("Document reset successfully.")
 
 
 # -----------------------------
-# Streamlit UI
+# PDF upload section
 # -----------------------------
 uploaded_file = st.file_uploader(
     "Upload your PDF file",
@@ -226,22 +302,45 @@ if uploaded_file:
                 st.session_state["chunks"] = chunks
                 st.session_state["index"] = index
                 st.session_state["document_ready"] = True
+                st.session_state["chat_history"] = []
 
                 st.success(
-                    f"Document processed successfully. Total chunks: {len(chunks)}"
+                    f"Document processed successfully. Total chunks created: {len(chunks)}"
                 )
 
                 with st.expander("Preview extracted text"):
                     st.write(text[:3000])
 
 
+# -----------------------------
+# Question-answer section
+# -----------------------------
 if st.session_state.get("document_ready"):
-    st.subheader("Ask a question from your document")
+    st.subheader("Ask questions from your document")
 
-    question = st.text_input("Enter your question:")
+    # Show previous chat history
+    for chat in st.session_state["chat_history"]:
+        with st.chat_message("user"):
+            st.write(chat["question"])
 
-    if st.button("Get Answer"):
-        if question.strip():
+        with st.chat_message("assistant"):
+            st.write(chat["answer"])
+
+            with st.expander("Sources used"):
+                for chunk in chat["sources"]:
+                    st.markdown(f"### Source Chunk {chunk['rank']}")
+                    st.write(chunk["content"])
+                    st.caption(
+                        f"Chunk Index: {chunk['chunk_index']} | Distance: {chunk['distance']:.4f}"
+                    )
+
+    question = st.chat_input("Ask a question from the uploaded PDF...")
+
+    if question:
+        with st.chat_message("user"):
+            st.write(question)
+
+        with st.chat_message("assistant"):
             with st.spinner("Searching document and generating answer..."):
                 relevant_chunks = retrieve_relevant_chunks(
                     question=question,
@@ -252,14 +351,23 @@ if st.session_state.get("document_ready"):
 
                 answer = generate_answer(question, relevant_chunks)
 
-                st.subheader("Answer")
                 st.write(answer)
 
-                with st.expander("View retrieved chunks"):
-                    for i, chunk in enumerate(relevant_chunks, start=1):
-                        st.markdown(f"### Chunk {i}")
-                        st.write(chunk)
-        else:
-            st.warning("Please enter a question.")
+                with st.expander("Sources used"):
+                    for chunk in relevant_chunks:
+                        st.markdown(f"### Source Chunk {chunk['rank']}")
+                        st.write(chunk["content"])
+                        st.caption(
+                            f"Chunk Index: {chunk['chunk_index']} | Distance: {chunk['distance']:.4f}"
+                        )
+
+                st.session_state["chat_history"].append(
+                    {
+                        "question": question,
+                        "answer": answer,
+                        "sources": relevant_chunks
+                    }
+                )
+
 else:
     st.info("Upload and process a PDF first, then ask questions from it.")
